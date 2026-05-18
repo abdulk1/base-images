@@ -1,0 +1,52 @@
+# Trivy scan against the candidate tag pushed by the build stage.
+# Fails the pipeline on HIGH/CRITICAL fixable vulns (configured in
+# shared/trivy/trivy.yaml). Use shared/trivy/.trivyignore to waive,
+# with a justification + expiry comment per line.
+
+scan:trivy:
+  stage: scan
+  needs: ["auth:ecr", "build:image"]
+  image:
+    name: ${TRIVY_IMAGE}
+    entrypoint: [""]
+  variables:
+    IMAGE_REPO:    "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${IMAGE_NAME}"
+    CANDIDATE_REF: "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${IMAGE_NAME}:${IMAGE_VERSION}-candidate"
+    DOCKER_CONFIG: "${CI_PROJECT_DIR}/.docker"
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: ".trivycache/"
+  script:
+    - trivy --version
+    - trivy image
+        --config shared/trivy/trivy.yaml
+        --ignorefile shared/trivy/.trivyignore
+        --format sarif
+        --output "trivy-${IMAGE_NAME}-${IMAGE_VERSION}.sarif"
+        "${CANDIDATE_REF}"
+    - trivy image
+        --config shared/trivy/trivy.yaml
+        --ignorefile shared/trivy/.trivyignore
+        --format table
+        "${CANDIDATE_REF}"
+  cache:
+    key: trivy-db
+    paths: [.trivycache/]
+  artifacts:
+    when: always
+    paths:
+      - "trivy-*.sarif"
+    expire_in: 30 days
+  parallel:
+    matrix:
+      - IMAGE_NAME: java
+        IMAGE_VERSION: "25"
+      - IMAGE_NAME: python
+        IMAGE_VERSION: "3.13"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - images/${IMAGE_NAME}/${IMAGE_VERSION}/**/*
+        - shared/hardening/**/*
+        - shared/trivy/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG

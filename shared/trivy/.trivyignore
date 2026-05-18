@@ -1,0 +1,3 @@
+# One CVE per line. Always include a justification + expiry comment.
+# Format:
+#   CVE-YYYY-NNNNN  # <why ignored> — review by <YYYY-MM-DD> — <owner>

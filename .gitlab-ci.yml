@@ -1,0 +1,61 @@
+# Pipeline entrypoint.
+#
+# Flow per image:  validate -> auth -> build -> scan -> sign -> (manual) promote
+#
+# - Build runs in Kaniko (no privileged runner needed).
+# - AWS auth uses GitLab OIDC (id_tokens) -> sts:AssumeRoleWithWebIdentity.
+# - Iron Bank pulls authenticate with IRONBANK_USER / IRONBANK_TOKEN
+#   (set as masked, protected CI variables).
+# - The image matrix lives in .gitlab/ci/build.yml — add a row there to onboard a new image.
+
+include:
+  - local: .gitlab/ci/build.yml
+  - local: .gitlab/ci/scan.yml
+  - local: .gitlab/ci/sign.yml
+  - local: .gitlab/ci/promote.yml
+
+stages:
+  - validate
+  - auth
+  - build
+  - scan
+  - sign
+  - promote
+
+variables:
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+  ECR_REGISTRY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+  ECR_REPO_PREFIX: "platform/base"
+  IRONBANK_REGISTRY: "registry1.dod.mil"
+
+  # Pinned tool versions — bump deliberately, in their own MR.
+  KANIKO_IMAGE:   "gcr.io/kaniko-project/executor:v1.23.2-debug"
+  AWSCLI_IMAGE:   "amazon/aws-cli:2.17.42"
+  TRIVY_IMAGE:    "aquasec/trivy:0.55.2"
+  COSIGN_IMAGE:   "gcr.io/projectsigstore/cosign:v2.4.1"
+  SYFT_IMAGE:     "anchore/syft:v1.14.1"
+  HADOLINT_IMAGE: "hadolint/hadolint:2.12.0-alpine"
+  SHELLCHECK_IMAGE: "koalaman/shellcheck-alpine:v0.10.0"
+
+default:
+  tags: [kubernetes]
+  interruptible: true
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+lint:dockerfiles:
+  stage: validate
+  image: ${HADOLINT_IMAGE}
+  script:
+    - hadolint images/*/*/Dockerfile
+
+lint:shell:
+  stage: validate
+  image: ${SHELLCHECK_IMAGE}
+  script:
+    - shellcheck scripts/*.sh shared/hardening/*.sh
