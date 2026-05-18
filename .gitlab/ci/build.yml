@@ -1,0 +1,78 @@
+# Auth + Kaniko build for every image in the matrix.
+#
+# Pattern: a single `auth:ecr` job exchanges the OIDC token for AWS creds
+# and writes a docker config.json artifact. The per-image `build:*` jobs
+# consume that artifact via DOCKER_CONFIG.
+#
+# To add an image:
+#   1. mkdir images/<family>/<version>; add Dockerfile
+#   2. append a row to the `parallel.matrix` of build:image
+
+auth:ecr:
+  stage: auth
+  image: ${AWSCLI_IMAGE}
+  id_tokens:
+    AWS_ID_TOKEN:
+      aud: sts.amazonaws.com
+  variables:
+    DOCKER_CONFIG_DIR: "${CI_PROJECT_DIR}/.docker"
+  script:
+    - ./scripts/aws-ecr-login.sh
+  artifacts:
+    paths: [.docker/config.json]
+    expire_in: 2 hours
+    when: on_success
+
+build:image:
+  stage: build
+  needs: ["auth:ecr", "lint:dockerfiles"]
+  image:
+    name: ${KANIKO_IMAGE}
+    entrypoint: [""]
+  variables:
+    IMAGE_CONTEXT: "${CI_PROJECT_DIR}/images/${IMAGE_NAME}/${IMAGE_VERSION}"
+    IMAGE_REPO:    "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${IMAGE_NAME}"
+    BUILD_TAG:     "${IMAGE_VERSION}-${CI_PIPELINE_CREATED_AT_DATE}-${CI_COMMIT_SHORT_SHA}"
+    CANDIDATE_TAG: "${IMAGE_VERSION}-candidate"
+    DOCKER_CONFIG: "${CI_PROJECT_DIR}/.docker"
+  before_script:
+    - export CI_PIPELINE_CREATED_AT_DATE="$(date -u +%Y%m%d)"
+    - export BUILD_TAG="${IMAGE_VERSION}-${CI_PIPELINE_CREATED_AT_DATE}-${CI_COMMIT_SHORT_SHA}"
+  script:
+    - |
+      /kaniko/executor \
+        --context        "${CI_PROJECT_DIR}" \
+        --dockerfile     "${IMAGE_CONTEXT}/Dockerfile" \
+        --destination    "${IMAGE_REPO}:${BUILD_TAG}" \
+        --destination    "${IMAGE_REPO}:${CANDIDATE_TAG}" \
+        --build-arg      "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --build-arg      "VCS_REF=${CI_COMMIT_SHA}" \
+        --build-arg      "VERSION=${BUILD_TAG}" \
+        --label          "org.opencontainers.image.source=${CI_PROJECT_URL}" \
+        --label          "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label          "gitlab.pipeline.url=${CI_PIPELINE_URL}" \
+        --reproducible \
+        --single-snapshot \
+        --cleanup
+    - echo "${IMAGE_NAME}=${IMAGE_REPO}:${BUILD_TAG}" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths: [build.env]
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - IMAGE_NAME: java
+        IMAGE_VERSION: "25"
+      - IMAGE_NAME: python
+        IMAGE_VERSION: "3.13"
+  rules:
+    # On MRs, only build images whose context or shared hardening changed.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - images/${IMAGE_NAME}/${IMAGE_VERSION}/**/*
+        - shared/hardening/**/*
+        - .gitlab/ci/build.yml
+    # On default branch / tags, always build the full matrix.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG

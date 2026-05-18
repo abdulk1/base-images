@@ -1,0 +1,17 @@
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# local build artifacts
+/dist/
+/build/
+*.tar
+*.sbom.json
+*.trivy.json
+
+# editor
+.idea/
+.vscode/
+*.swp
